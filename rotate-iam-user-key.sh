@@ -6,7 +6,7 @@
 #
 # Summary: This script automatically rotates the key for an IAM user.
 #
-# Version: 1.0.0
+# Version: 1.0.1
 #
 # Command-line arguments:
 #    - See the 'PrintHelp' function below for command-line arguments. Or run this script with the --help option.
@@ -23,14 +23,16 @@
 function PrintHelp() {
     echo "usage: $__base.sh [options...] "
     echo "options:"
-    echo " -a --aws-key-file  The file for the .csv access key file for an AWS administrator. Required. The AWS administrator must"
+    echo " -a --aws-key-file  The file for the .csv access key file for an AWS administrator. Optional. The AWS administrator must"
     echo "                    have the rights to list and update credentials for the IAM user. The script expects the .csv format "
-    echo "                    used when you dowload the key from IAM in the AWS console."
+    echo "                    used when you download the key from IAM in the AWS console. If this option is not specified, "
+    echo "                    existing AWS CLI credentials must be already defined and are used."
     echo " -s --s3-test-file  Specifies a test text file stored in S3 used for testing. Required. The IAM user must have "
     echo "                    GET access to this file."
     echo " -c --csv-key-file  The name of the output .csv file containing the new access key information. Optional."
     echo " -u --user          The IAM user whose key you want to rotate. Required."
     echo " -j --json          A file to send JSON output to. Optional."
+    echo " -r --reconfigure   Set this to any non-empty value to reconfigure AWS CLI credentials. Optional."
     echo "    --help          Prints this help message"
 }
 
@@ -60,6 +62,7 @@ AWS_KEY_FILE=
 JSON_OUTPUT_FILE=
 S3_TEST_FILE=
 CSV_OUTPUT_FILE=
+RECONFIGURE=
 
 # Check if any arguments were passed. If not, print an error
 if [ $# -eq 0 ]; then
@@ -84,6 +87,9 @@ while [ "$1" != "" ]; do
         -j | --json)  shift
                       JSON_OUTPUT_FILE="$1"
                       ;;
+        -r | --reconfigure) shift
+                      RECONFIGURE="$1"
+                      ;;
         -c | --csv-key-file) shift
                       CSV_OUTPUT_FILE="$1"
                       ;;
@@ -101,7 +107,7 @@ while [ "$1" != "" ]; do
 done
 
 # Make sure that all the required arguments were passed into the script
-if [[ -z "$IAM_USER" ]] || [[ -z "$AWS_KEY_FILE" ]] || [[ -z "$S3_TEST_FILE" ]]; then
+if [[ -z "$IAM_USER" ]] || [[ -z "$S3_TEST_FILE" ]]; then
     >&2 echo "error: too few arguments"
     PrintHelp
     exit 0
@@ -119,6 +125,8 @@ function ConfigureAwsCli() {
         # Configure temp profile
         aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
         aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
+    else
+      echo "Using existing AWS credentials"
     fi
 
 }
@@ -135,7 +143,7 @@ ConfigureAwsCli
 cd "$__dir"
 
 echo "Verifying the IAM user only has one key currently..."
-aws iam list-access-keys --user-name "$IAM_USER" > existing-keys
+aws iam list-access-keys --output json --user-name "$IAM_USER" > existing-keys
 NUM_OF_KEYS=$(grep -c "AccessKeyId" existing-keys)
 
 if [ "$NUM_OF_KEYS" -gt 1 ] ; then
@@ -145,13 +153,13 @@ if [ "$NUM_OF_KEYS" -gt 1 ] ; then
 fi
 
 # Get the existing key
-EXISTING_KEY_ID=$(awk '/.AccessKeyId./{print substr($2,2,length($2)-2)}' existing-keys) 
+EXISTING_KEY_ID=$(awk '/.AccessKeyId./{print substr($2,2,length($2)-2)}' existing-keys)
 echo "Existing key Id: $EXISTING_KEY_ID"
 rm existing-keys
 
 # Create a new access key in AWS for the IAM user
 echo "Creating new access key for IAM user..."
-aws iam create-access-key --user-name "$IAM_USER" > temp-key
+aws iam create-access-key --output json --user-name "$IAM_USER" > temp-key
 NEW_AWS_ACCESS_KEY_ID=$(awk '/.AccessKeyId./{print substr($2,2,length($2)-2)}' temp-key)
 NEW_AWS_SECRET_ACCESS_KEY=$(awk '/.SecretAccessKey./{print substr($2,2,length($2)-3)}' temp-key)
 rm temp-key
@@ -195,32 +203,37 @@ rm KeyRotationTest.txt
 #
 #######
 
-
 # If the test was successful, continue. Otherwise rollback.
 if [ "$SUCCESS" = true ]; then
   echo "Successfully used new key. Inactivating old key and retesting..."
- 
-  # Disable the old key, and re-try the test. 
+
+  # Disable the old key, and re-try the test.
   aws iam update-access-key  --user-name "$IAM_USER" --access-key-id "$EXISTING_KEY_ID" --status Inactive
   aws s3 cp --profile temp-role "$S3_TEST_FILE" ./KeyRotationTest.txt && RETURN_CODE=$? || RETURN_CODE=$?
-  rm KeyRotationTest.txt
 
   if [ "$RETURN_CODE" -eq 0 ]; then SUCCESS=true; else SUCCESS=false; fi
 
   # If the second test was successful, then delete the old key. Otherwise, notify the user and exit.
   if [ "$SUCCESS" = true ]; then
-    echo "Successfully used new key after inactivating the old key. Deleting the old key..."
-    aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$EXISTING_KEY_ID"
+    if [[ ! -z "$RECONFIGURE" ]]; then
+      echo "Successfully used new key after inactivating the old key. Reconfiguring AWS CLI with new key..."
+      aws configure set aws_access_key_id "$NEW_AWS_ACCESS_KEY_ID"
+      aws configure set aws_secret_access_key "$NEW_AWS_SECRET_ACCESS_KEY"
+    fi
+    echo "Deleting the old key..."
+    aws iam delete-access-key --profile temp-role --user-name "$IAM_USER" --access-key-id "$EXISTING_KEY_ID"
   else
     >&2 echo "Test failed after trying inactiving the old key. Reactivating the key and stopping the rotation."
     aws iam update-access-key  --user-name "$IAM_USER" --access-key-id "$EXISTING_KEY_ID" --status Active
     exit 6
   fi
+  rm KeyRotationTest.txt
 else
   >&2 echo "Access test failed for new key. Unable to rotate keys. Rolling back"
   aws iam delete-access-key  --user-name "$IAM_USER"  --access-key-id "$NEW_AWS_ACCESS_KEY_ID"
   exit 7
 fi
+
 
 # Print the JSON file if requested
 if [[ ! -z "$JSON_OUTPUT_FILE" ]]; then
@@ -233,10 +246,9 @@ if [[ ! -z "$JSON_OUTPUT_FILE" ]]; then
     }\n' "$IAM_USER" "$NEW_AWS_ACCESS_KEY_ID" "$NEW_AWS_SECRET_ACCESS_KEY" > "$JSON_OUTPUT_FILE"
 fi
 
-# Print the JSON file if requested
+# Print the CSV file if requested
 if [[ ! -z "$CSV_OUTPUT_FILE" ]]; then
     echo "Outputing .csv to $CSV_OUTPUT_FILE..."
     printf 'User Name,Access Key Id,Secret Access Key\n%s,%s,%s' \
         "$IAM_USER" "$NEW_AWS_ACCESS_KEY_ID" "$NEW_AWS_SECRET_ACCESS_KEY" > "$CSV_OUTPUT_FILE"
 fi
-

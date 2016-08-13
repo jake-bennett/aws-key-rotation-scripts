@@ -58,12 +58,14 @@ The rotate-iam-key.sh script accepts the following command line options:
 
     usage: rotate-iam-user-key.sh [options...]
     options:
-     -a --aws-key-file  The file for the .csv access key file for an AWS administrator. Required. The AWS administrator must
+     -a --aws-key-file  The file for the .csv access key file for an AWS administrator. Optional. The AWS administrator must
                         have the rights to list and update credentials for the IAM user. The script expects the .csv format
-                        used when you dowload the key from IAM in the AWS console.
+                        used when you download the key from IAM in the AWS console. If this option is not specified,
+                        existing AWS CLI credentials must be already defined and are used.
      -s --s3-test-file  Specifies a test text file stored in S3 used for testing. Required. The IAM user must have
                         GET access to this file.
      -c --csv-key-file  The name of the output .csv file containing the new access key information. Optional.
      -u --user          The IAM user whose key you want to rotate. Required.
      -j --json          A file to send JSON output to. Optional.
+     -r --reconfigure   Set AWS CLI to use new credentials
         --help          Prints this help message
