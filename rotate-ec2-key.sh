@@ -35,6 +35,7 @@ function PrintHelp() {
     echo "                    the default credentials in ~/.aws/credentials will be used."
     echo " -u --user          Root/admin user for the EC2 instance. Optional. The default value is 'core' (for the CoreOS distro)."
     echo " -j --json          A file to send JSON output to. Optional."
+    echo " -r --region        AWS region to operate in. Optional."
     echo "    --help          Prints this help message"
 }
 
@@ -81,8 +82,8 @@ function VerifyAWSPermissions() {
     # Test to make sure we have rights to update the tags for this instance. Otherwise, stop.
     echo "Verifying that the AWS CLI credentials are allowed to update tags on the EC2 instance..."
     # Get the current tag value for the
-    aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" > ec2_tags
-    TAG_LINE=$(grep -n "EC2KeyName" "ec2_tags" | cut -d':' -f1)
+    aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" $AWS_REGION > ec2_tags
+    TAG_LINE=$(grep -n "EC2KeyName" "ec2_tags" | cut -d':' -f1) || true
 
     # Check if we found a tag specifying EC2 SSH key
     if [[ -z "$TAG_LINE" ]]; then
@@ -96,8 +97,8 @@ function VerifyAWSPermissions() {
     rm ec2_tags
 
     # Make small update to tag for testing purposes, and then revert it back
-    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$TAG_VALUE "
-    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$TAG_VALUE"
+    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$TAG_VALUE " $AWS_REGION
+    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$TAG_VALUE" $AWS_REGION
     echo "Verified. The AWS credentials have permission to update tags."
 
 }
@@ -127,6 +128,7 @@ EC2_HOST=
 EC2_USER=core
 AWS_KEY_FILE=
 JSON_OUTPUT_FILE=
+AWS_REGION=
 
 # Check if any arguments were passed. If not, print an error
 if [ $# -eq 0 ]; then
@@ -153,6 +155,9 @@ while [ "$1" != "" ]; do
                       ;;
         -j | --json)  shift
                       JSON_OUTPUT_FILE="$1"
+                      ;;
+        -r | --region)  shift
+                      AWS_REGION="--region $1"
                       ;;
         --help)       PrintHelp
                       exit 0
@@ -268,7 +273,7 @@ ssh -o StrictHostKeyChecking=no -q -i "$NEW_KEY_NAME.pem" "$EC2_USER@$EC2_HOST" 
 
 # Update the EC2 instance to include a tag with the key name
 echo "Updating the instance tag to include the key name..."
-aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$NEW_KEY_NAME"
+aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$NEW_KEY_NAME" $AWS_REGION
 
 # Print the JSON file if requested
 if [ ! "$JSON_OUTPUT_FILE" == "" ]; then
@@ -284,4 +289,3 @@ if [ ! "$JSON_OUTPUT_FILE" == "" ]; then
 fi
 
 echo "Rotation complete."
-
